@@ -267,7 +267,7 @@ or this command:
 
 #### Snap Nightlies
 
-     snap install sqlitebrowser --devmode
+     snap install sqlitebrowser --edge
 
 #### Snap Stable
 
@@ -309,6 +309,7 @@ Follow us on X: https://x.com/sqlitebrowser
 
 ## Releases
 
+* [Version 3.13.1 released](https://github.com/sqlitebrowser/sqlitebrowser/releases/tag/v3.13.1) - 2024-10-16
 * [Version 3.13.0 released](https://github.com/sqlitebrowser/sqlitebrowser/releases/tag/v3.13.0) - 2024-07-23
 * [Version 3.12.2 released](https://github.com/sqlitebrowser/sqlitebrowser/releases/tag/v3.12.2) - 2021-05-18
 * [Version 3.12.1 released](https://github.com/sqlitebrowser/sqlitebrowser/releases/tag/v3.12.1) - 2020-11-09

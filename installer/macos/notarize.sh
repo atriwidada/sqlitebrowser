@@ -23,7 +23,10 @@ for TARGET in $(find build -name "DB Browser for SQL*.app" | sed -e 's/ /_/g'); 
     TARGET=$(echo $TARGET | sed -e 's/_/ /g')
     mkdir "$TARGET/Contents/Extensions"
 
-    clang -I /opt/homebrew/opt/sqlb-sqlite/include -L /opt/homebrew/opt/sqlb-sqlite/lib -fno-common -dynamiclib src/extensions/extension-formats.c -o "$TARGET/Contents/Extensions/formats.dylib"
+    arch -x86_64 clang -I /opt/homebrew/opt/sqlb-sqlite/include -L /opt/homebrew/opt/sqlb-sqlite/lib -fno-common -dynamiclib src/extensions/extension-formats.c -o formats_x86_64.dylib
+    clang -I /opt/homebrew/opt/sqlb-sqlite/include -L /opt/homebrew/opt/sqlb-sqlite/lib -fno-common -dynamiclib src/extensions/extension-formats.c -o formats_arm64.dylib
+    lipo -create formats_x86_64.dylib formats_arm64.dylib -output "$TARGET/Contents/Extensions/formats.dylib"
+
     if [ -f "$TARGET/Contents/Extensions/formats.dylib" ]; then
         install_name_tool -id "@executable_path/../Extensions/formats.dylib" "$TARGET/Contents/Extensions/formats.dylib"
         ln -s formats.dylib "$TARGET/Contents/Extensions/formats.dylib.dylib"
@@ -81,7 +84,7 @@ mv build/*.app installer/macos
 # Create the DMG
 export DATE=$(date +%Y%m%d)
 
-if [ "$SQLCIPHER" = "1" ]; then
+if [ "$SQLCIPHER" = "true" ]; then
     if [ "$NIGHTLY" = "false" ]; then
     # Continuous with SQLCipher
     sed -i "" 's/"DB Browser for SQLCipher Nightly.app"/"DB Browser for SQLCipher-dev-'$(git rev-parse --short --verify HEAD)'.app"/' installer/macos/sqlcipher-nightly.json

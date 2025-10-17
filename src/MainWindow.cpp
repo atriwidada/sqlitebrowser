@@ -1,4 +1,6 @@
 #include "MainWindow.h"
+#include "sql/ObjectIdentifier.h"
+#include "sql/sqlitetypes.h"
 #include "ui_MainWindow.h"
 
 #include "Application.h"
@@ -53,6 +55,7 @@
 #include <QTemporaryFile>
 #include <QToolButton>
 #include <QUrl>
+#include <QActionGroup>
 
 #ifdef Q_OS_MACX //Needed only on macOS
     #include <QOpenGLWidget>
@@ -66,6 +69,7 @@ MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent),
       ui(new Ui::MainWindow),
       db(),
+      m_currentTabTableModel(nullptr),
       editDock(new EditDialog(this)),
       plotDock(new PlotDock(this)),
       remoteDock(new RemoteDock(this)),
@@ -111,18 +115,7 @@ void MainWindow::init()
 #ifdef CHECKNEWVERSION
     // Check for a new version if automatic update check aren't disabled in the settings dialog
     if(Settings::getValue("checkversion", "enabled").toBool())
-    {
-        RemoteNetwork::get().fetch(QUrl("https://download.sqlitebrowser.org/currentrelease"), RemoteNetwork::RequestTypeCustom,
-                                   QString(), [this](const QByteArray& reply) {
-            QList<QByteArray> info = reply.split('\n');
-            if(info.size() >= 2)
-            {
-                QString version = info.at(0).trimmed();
-                QString url = info.at(1).trimmed();
-                checkNewVersion(version, url);
-            }
-        }, false, true);
-    }
+        checkNewVersion(true);
 #endif
 
     // create facade objects to dbTreeWidgets
@@ -135,7 +128,9 @@ void MainWindow::init()
     connect(&db, &DBBrowserDB::requestCollation, this, &MainWindow::requestCollation);
 
     // Set up DB structure tab
-    dbStructureModel = new DbStructureModel(db, this);
+    dbStructureModel = new DbStructureModel(db, this,
+                                            Settings::getValue("SchemaDock", "dropSelectQuery").toBool(),
+                                            Settings::getValue("SchemaDock", "dropInsert").toBool());
     connect(&db, &DBBrowserDB::structureUpdated, this, [this]() {
         std::vector<sqlb::ObjectIdentifier> old_tables;
         for(const auto& d : allTableBrowserDocks())
@@ -256,9 +251,32 @@ void MainWindow::init()
     popupSchemaDockMenu->addAction(ui->actionPopupSchemaDockBrowseTable);
     popupSchemaDockMenu->addAction(ui->actionPopupSchemaDockDetachDatabase);
     popupSchemaDockMenu->addSeparator();
-    popupSchemaDockMenu->addAction(ui->actionDropSelectQueryCheck);
-    popupSchemaDockMenu->addAction(ui->actionDropQualifiedCheck);
-    popupSchemaDockMenu->addAction(ui->actionEnquoteNamesCheck);
+
+    auto dropSchemaDockMenu = new QMenu(popupSchemaDockMenu);
+    popupSchemaDockMenu->addMenu(dropSchemaDockMenu);
+    dropSchemaDockMenu->setTitle(tr("Clipboard/Drop Options"));
+    dropSchemaDockMenu->setStatusTip(tr("Options for Drag && Drop and Copy to Clipboard operations."));
+    dropSchemaDockMenu->addAction(ui->actionDropSelectQueryCheck);
+    dropSchemaDockMenu->addAction(ui->actionDropInsertCheck);
+    dropSchemaDockMenu->addAction(ui->actionDropNamesCheck);
+
+    QActionGroup* dropGroup = new QActionGroup(dropSchemaDockMenu);
+    dropGroup->addAction(ui->actionDropSelectQueryCheck);
+    dropGroup->addAction(ui->actionDropInsertCheck);
+    dropGroup->addAction(ui->actionDropNamesCheck);
+
+    dropSchemaDockMenu->addSeparator();
+    dropSchemaDockMenu->addAction(ui->actionDropQualifiedCheck);
+    dropSchemaDockMenu->addAction(ui->actionEnquoteNamesCheck);
+
+    popupSchemaDockMenu->addAction(ui->actionCopyInSchema);
+    connect(ui->actionCopyInSchema, &QAction::triggered, this, [=]() {
+        dbStructureModel->copy(ui->treeSchemaDock->selectionModel()->selectedIndexes());
+    });
+    auto copyShortcut = new QShortcut(QKeySequence::Copy, ui->treeSchemaDock, nullptr, nullptr, Qt::WidgetShortcut);
+    connect(copyShortcut, &QShortcut::activated, this, [=]() {
+        dbStructureModel->copy(ui->treeSchemaDock->selectionModel()->selectedIndexes());
+    });
 
     popupOpenDbMenu = new QMenu(this);
     popupOpenDbMenu->addAction(ui->fileOpenAction);
@@ -335,7 +353,7 @@ void MainWindow::init()
     ui->viewMenu->addMenu(layoutMenu);
 
     QAction* resetLayoutAction = layoutMenu->addAction(tr("Reset Window Layout"));
-    resetLayoutAction->setShortcut(QKeySequence(tr("Ctrl+Alt+0")));
+    resetLayoutAction->setShortcut(QKeySequence(tr("Ctrl+0")));
     connect(resetLayoutAction, &QAction::triggered, this, [=]() {
             restoreState(defaultWindowState);
             restoreOpenTabs(defaultOpenTabs);
@@ -425,17 +443,19 @@ void MainWindow::init()
     connect(editDock, &EditDialog::recordTextUpdated, this, &MainWindow::updateRecordText);
     connect(editDock, &EditDialog::evaluateText, this, &MainWindow::evaluateText);
     connect(editDock, &EditDialog::requestUrlOrFileOpen, this, &MainWindow::openUrlOrFile);
-    connect(ui->dbTreeWidget->selectionModel(), &QItemSelectionModel::selectionChanged, this, &MainWindow::changeTreeSelection);
+    connect(ui->dbTreeWidget->selectionModel(), &QItemSelectionModel::selectionChanged, this, &MainWindow::changeObjectSelection);
     connect(ui->dockEdit, &QDockWidget::visibilityChanged, this, &MainWindow::toggleEditDock);
     connect(remoteDock, SIGNAL(openFile(QString)), this, SLOT(fileOpen(QString)));
     connect(ui->actionDropSelectQueryCheck, &QAction::toggled, dbStructureModel, &DbStructureModel::setDropSelectQuery);
+    connect(ui->actionDropInsertCheck, &QAction::toggled, dbStructureModel, &DbStructureModel::setDropInsert);
+    connect(ui->actionDropNamesCheck, &QAction::toggled, dbStructureModel,
+            [this]() {
+              dbStructureModel->setDropSelectQuery(false);
+              dbStructureModel->setDropInsert(false);
+            });
     connect(ui->actionDropQualifiedCheck, &QAction::toggled, dbStructureModel, &DbStructureModel::setDropQualifiedNames);
     connect(ui->actionEnquoteNamesCheck, &QAction::toggled, dbStructureModel, &DbStructureModel::setDropEnquotedNames);
     connect(&db, &DBBrowserDB::databaseInUseChanged, this, &MainWindow::updateDatabaseBusyStatus);
-
-    ui->actionDropSelectQueryCheck->setChecked(Settings::getValue("SchemaDock", "dropSelectQuery").toBool());
-    ui->actionDropQualifiedCheck->setChecked(Settings::getValue("SchemaDock", "dropQualifiedNames").toBool());
-    ui->actionEnquoteNamesCheck->setChecked(Settings::getValue("SchemaDock", "dropEnquotedNames").toBool());
 
     connect(ui->actionSqlStop, &QAction::triggered, this, [this]() {
        if(execute_sql_worker && execute_sql_worker->isRunning())
@@ -479,7 +499,7 @@ void MainWindow::init()
 
     // Since in some keyboards pressing F keys is cumbersome, add an alternate shortcut and document
     // it in the toolbar.
-    ui->fileCloseAction->setShortcuts({QKeySequence(tr("Ctrl+F4")), QKeySequence(tr("Ctrl+Alt+W"))});
+    ui->fileCloseAction->setShortcuts({QKeySequence(tr("Ctrl+F4")), QKeySequence(tr("Alt+Shift+W"))});
     ui->actionCloseProject->setShortcuts({QKeySequence(tr("Ctrl+Shift+W")), QKeySequence(tr("Ctrl+Shift+F4"))});
     addShortcutsTooltip(ui->fileCloseAction);
 
@@ -567,9 +587,9 @@ bool MainWindow::fileOpen(const QString& fileName, bool openFromProject, bool re
                     // loadProject will init the rest
                     return true;
                 }
-                if(ui->tabSqlAreas->count() == 0)
+                if(ui->tabSqlAreas->count() == 0) // Create a new tab if there isn't one.
                     openSqlTab(true);
-                else if(ui->mainTab->currentWidget() == ui->pragmas)
+                if(ui->mainTab->currentWidget() == ui->pragmas)
                     loadPragmas();
 
                 refreshTableBrowsers();
@@ -780,6 +800,7 @@ void MainWindow::closeEvent( QCloseEvent* event )
 
         Settings::setValue("SQLLogDock", "Log", ui->comboLogSubmittedBy->currentText());
         Settings::setValue("SchemaDock", "dropSelectQuery", ui->actionDropSelectQueryCheck->isChecked());
+        Settings::setValue("SchemaDock", "dropInsert", ui->actionDropInsertCheck->isChecked());
         Settings::setValue("SchemaDock", "dropQualifiedNames", ui->actionDropQualifiedCheck->isChecked());
         Settings::setValue("SchemaDock", "dropEnquotedNames", ui->actionEnquoteNamesCheck->isChecked());
 
@@ -897,8 +918,9 @@ void MainWindow::compact()
 void MainWindow::deleteObject()
 {
     // Get name and type of object to delete
-    sqlb::ObjectIdentifier obj = dbSelected->object();
-    QString type = dbSelected->objectType();
+    sqlb::ObjectIdentifier obj;
+    QString type;
+    getSelectedObject(type, obj);
 
     // Due to different grammar in languages (e.g. gender or declension), each message must be given separately to translation.
     QString message;
@@ -932,19 +954,45 @@ void MainWindow::deleteObject()
             QMessageBox::warning(this, QApplication::applicationName(), message + " " + error);
         } else {
             refreshTableBrowsers();
-            changeTreeSelection();
+            changeObjectSelection();
+        }
+    }
+}
+
+void MainWindow::getSelectedObject(QString &type, sqlb::ObjectIdentifier& obj) {
+
+    type = "";
+    obj = sqlb::ObjectIdentifier();
+
+    QWidget* currentTab = ui->mainTab->currentWidget();
+    if (currentTab == ui->structure) {
+
+        if(!dbSelected->hasSelection())
+            return;
+
+        // Get name and type of the object to edit
+        obj = dbSelected->object();
+        type = dbSelected->objectType();
+
+    } else if (currentTab == ui->browser) {
+        // Get name of the current table from the Data Browser
+        obj = currentlyBrowsedTableName();
+
+        sqlb::TablePtr tablePtr = db.getTableByName(obj);
+        if (!tablePtr) {
+            return;
+        } else {
+            type = tablePtr->isView()? "view" : "table";
         }
     }
 }
 
 void MainWindow::editObject()
 {
-    if(!dbSelected->hasSelection())
-        return;
-
-    // Get name and type of the object to edit
-    sqlb::ObjectIdentifier obj = dbSelected->object();
-    QString type = dbSelected->objectType();
+    QString type;
+    sqlb::ObjectIdentifier obj;
+    // Get name and type of object to edit
+    getSelectedObject(type, obj);
 
     if(type == "table")
     {
@@ -1094,6 +1142,7 @@ void MainWindow::dataTableSelectionChanged(const QModelIndex& index)
     if (editDock->isVisible()) {
         editDock->setCurrentIndex(index);
     }
+    changeObjectSelection();
 }
 
 /*
@@ -1128,7 +1177,7 @@ void MainWindow::executeQuery()
     SqlExecutionArea* sqlWidget = qobject_cast<SqlExecutionArea*>(ui->tabSqlAreas->currentWidget());
     SqlTextEdit* editor = sqlWidget->getEditor();
     auto* current_tab = ui->tabSqlAreas->currentWidget();
-    const QString tabName = ui->tabSqlAreas->tabText(ui->tabSqlAreas->currentIndex()).remove('&');
+    const QString tabName = ui->tabSqlAreas->tabText(ui->tabSqlAreas->currentIndex()).remove('&').remove(QRegularExpression("\\*$"));
 
     // Remove any error indicators
     editor->clearErrorIndicators();
@@ -1420,7 +1469,7 @@ void MainWindow::importTableFromCSV()
     } else if(sender() == ui->actionFileImportCsvClipboard) {
         // Save clipboard content to temporary file
 
-        QTemporaryFile temp("csv_clipboard");
+        QTemporaryFile temp(QDir::tempPath() + QDir::separator() + "csv_clipboard");
         temp.open();
         QClipboard* clipboard = QGuiApplication::clipboard();
         temp.write(clipboard->text().toUtf8());
@@ -1438,40 +1487,32 @@ void MainWindow::exportTableToCSV()
 {
     // Get the current table name if we are in the Browse Data tab
     sqlb::ObjectIdentifier current_table;
-    if(ui->mainTab->currentWidget() == ui->structure)
-    {
-        QString type = dbSelected->objectType();
-        if(type == "table" || type == "view")
-        {
-            current_table = dbSelected->object();
-        }
-    } else if(ui->mainTab->currentWidget() == ui->browser) {
-        current_table = currentlyBrowsedTableName();
-    }
 
-    // Open dialog
-    ExportDataDialog dialog(db, ExportDataDialog::ExportFormatCsv, this, "", current_table);
-    dialog.exec();
+    QString type;
+    // Get name and type of object to export
+    getSelectedObject(type, current_table);
+
+    if(type == "table" || type == "view") {
+        // Open dialog
+        ExportDataDialog dialog(db, ExportDataDialog::ExportFormatCsv, this, "", current_table);
+        dialog.exec();
+    }
 }
 
 void MainWindow::exportTableToJson()
 {
     // Get the current table name if we are in the Browse Data tab
     sqlb::ObjectIdentifier current_table;
-    if(ui->mainTab->currentWidget() == ui->structure)
-    {
-        QString type = dbSelected->objectType();
-        if(type == "table" || type == "view")
-        {
-            current_table = dbSelected->object();
-        }
-    } else if(ui->mainTab->currentWidget() == ui->browser) {
-        current_table = currentlyBrowsedTableName();
-    }
 
-    // Open dialog
-    ExportDataDialog dialog(db, ExportDataDialog::ExportFormatJson, this, "", current_table);
-    dialog.exec();
+    QString type;
+    // Get name and type of object to export
+    getSelectedObject(type, current_table);
+
+    if(type == "table" || type == "view") {
+        // Open dialog
+        ExportDataDialog dialog(db, ExportDataDialog::ExportFormatJson, this, "", current_table);
+        dialog.exec();
+    }
 }
 
 void MainWindow::dbState(bool dirty)
@@ -1619,7 +1660,7 @@ void MainWindow::createTreeContextMenu(const QPoint &qPoint)
     if(type == "table" || type == "view" || type == "trigger" || type == "index" || type == "database")
     {
         // needed for first click on treeView as for first time change QItemSelectionModel::currentChanged doesn't fire
-        changeTreeSelection();
+        changeObjectSelection();
         popupTableMenu->exec(ui->dbTreeWidget->mapToGlobal(qPoint));
     }
 }
@@ -1644,7 +1685,7 @@ void MainWindow::createSchemaDockContextMenu(const QPoint &qPoint)
     popupSchemaDockMenu->exec(ui->treeSchemaDock->mapToGlobal(qPoint));
 }
 
-void MainWindow::changeTreeSelection()
+void MainWindow::changeObjectSelection()
 {
     // Just assume first that something's selected that can not be edited at all
     ui->editDeleteObjectAction->setEnabled(false);
@@ -1656,12 +1697,14 @@ void MainWindow::changeTreeSelection()
 
     ui->fileDetachAction->setVisible(false);
 
-    if(!dbSelected->hasSelection())
+    QString type;
+    sqlb::ObjectIdentifier obj;
+    getSelectedObject(type, obj);
+    if(obj.isEmpty())
         return;
 
     // Change the text and tooltips of the actions
-    QString type = dbSelected->objectType();
-    QString schema = dbSelected->schema();
+    QString schema = QString::fromStdString(obj.schema());
 
     if (type.isEmpty())
     {
@@ -2130,6 +2173,26 @@ void MainWindow::closeSqlTab(int index, bool force, bool askSaving)
     focusSqlEditor();
 }
 
+void MainWindow::markTabsModified()
+{
+    // Add (and remove) an asterisk next to the filename of modified file tabs.
+    for (int i = 0; i < ui->tabSqlAreas->count(); ++i) {
+        SqlExecutionArea* sqlWidget = qobject_cast<SqlExecutionArea*>(ui->tabSqlAreas->widget(i));
+        QString currentText = ui->tabSqlAreas->tabText(i);
+        if (!currentText.endsWith("*")) {
+            if (sqlWidget->getEditor()->isModified()) {
+                ui->tabSqlAreas->setTabText(i, currentText + "*");
+            }
+        }
+        else {
+            if (!sqlWidget->getEditor()->isModified()) {
+                currentText.chop(1);
+                ui->tabSqlAreas->setTabText(i, currentText);
+            }
+        }
+    }
+}
+
 int MainWindow::openSqlTab(bool resetCounter)
 {
     static int tabNumber = 0;
@@ -2147,23 +2210,7 @@ int MainWindow::openSqlTab(bool resetCounter)
     w->getEditor()->setEnabledFindDialog(false);
     w->getEditor()->setFocus();
     connect(w, &SqlExecutionArea::findFrameVisibilityChanged, ui->actionSqlFind, &QAction::setChecked);
-    // Add (and remove) an asterisk next to the filename of modified file tabs.
-    connect(w->getEditor(), &SqlTextEdit::modificationChanged, this, [this](bool) {
-        for(int i=0; i < ui->tabSqlAreas->count(); ++i) {
-            SqlExecutionArea* sqlWidget = qobject_cast<SqlExecutionArea*>(ui->tabSqlAreas->widget(i));
-            QString currentText = ui->tabSqlAreas->tabText(i);
-            if(!currentText.endsWith("*")) {
-                if(sqlWidget->getEditor()->isModified()) {
-                    ui->tabSqlAreas->setTabText(i, currentText + "*");
-                }
-            } else {
-                if(!sqlWidget->getEditor()->isModified()) {
-                    currentText.chop(1);
-                    ui->tabSqlAreas->setTabText(i, currentText);
-                }
-            }
-        }
-    });
+    connect(w->getEditor(), &SqlTextEdit::modificationChanged, this, &MainWindow::markTabsModified);
 
     // Connect now the find shortcut to the editor with widget context, so it isn't ambiguous with other Scintilla Widgets.
     QShortcut* shortcutFind = new QShortcut(ui->actionSqlFind->shortcut(), w->getEditor(), nullptr, nullptr, Qt::WidgetShortcut);
@@ -2433,12 +2480,36 @@ void MainWindow::reloadSettings()
 
     sqlb::setIdentifierQuoting(static_cast<sqlb::escapeQuoting>(Settings::getValue("editor", "identifier_quotes").toInt()));
 
-    ui->tabSqlAreas->setTabsClosable(Settings::getValue("editor", "close_button_on_tabs").toBool());
+    ui->tabSqlAreas->setTabsClosable(
+        Settings::getValue("editor", "close_button_on_tabs").toBool());
+
+    ui->actionDropSelectQueryCheck->setChecked(Settings::getValue("SchemaDock", "dropSelectQuery").toBool());
+    ui->actionDropInsertCheck->setChecked(Settings::getValue("SchemaDock", "dropInsert").toBool());
+    ui->actionDropNamesCheck->setChecked(!ui->actionDropSelectQueryCheck->isChecked() &&
+                                         !ui->actionDropInsertCheck->isChecked());
+
+    ui->actionDropQualifiedCheck->setChecked(Settings::getValue("SchemaDock", "dropQualifiedNames").toBool());
+    ui->actionEnquoteNamesCheck->setChecked(Settings::getValue("SchemaDock", "dropEnquotedNames").toBool());
 }
 
-void MainWindow::checkNewVersion(const QString& versionstring, const QString& url)
+void MainWindow::checkNewVersion(const bool automatic)
 {
-    // versionstring contains a major.minor.patch version string
+        RemoteNetwork::get().fetch(QUrl("https://download.sqlitebrowser.org/currentrelease"), RemoteNetwork::RequestTypeCustom,
+                                   QString(), [this, automatic](const QByteArray& reply) {
+            QList<QByteArray> info = reply.split('\n');
+            if(info.size() >= 2)
+            {
+                QString version = info.at(0).trimmed();
+                QString url = info.at(1).trimmed();
+                compareVersionAndShowDialog(version, url, automatic);
+
+            }
+        }, false, true);
+}
+
+void MainWindow::compareVersionAndShowDialog(const QString& versionstring, const QString& url, const bool automatic)
+{
+    // versionString contains a major.minor.patch version string
     QStringList versiontokens = versionstring.split(".");
     if(versiontokens.size() < 3)
         return;
@@ -2463,20 +2534,21 @@ void MainWindow::checkNewVersion(const QString& versionstring, const QString& ur
 
     if(newversion)
     {
-        int ignmajor = Settings::getValue("checkversion", "ignmajor").toInt();
-        int ignminor = Settings::getValue("checkversion", "ignminor").toInt();
-        int ignpatch = Settings::getValue("checkversion", "ignpatch").toInt();
+        int ignmajor = (automatic) ? Settings::getValue("checkversion", "ignmajor").toInt() : 0;
+        int ignminor = (automatic) ? Settings::getValue("checkversion", "ignminor").toInt() : 0;
+        int ignpatch = (automatic) ? Settings::getValue("checkversion", "ignpatch").toInt() : 0;
 
         // check if the user doesn't care about the current update
         if(!(ignmajor == major && ignminor == minor && ignpatch == patch))
         {
             QMessageBox msgBox;
-            QPushButton *idontcarebutton = msgBox.addButton(tr("Don't show again"), QMessageBox::ActionRole);
+            // WARN: Please note that if the user attempts to manually check for updates, the value of this variable may be nullptr.
+            QPushButton *idontcarebutton = (automatic) ? msgBox.addButton(tr("Don't show again"), QMessageBox::ActionRole) : nullptr;
             msgBox.addButton(QMessageBox::Ok);
             msgBox.setTextFormat(Qt::RichText);
             msgBox.setWindowTitle(tr("New version available."));
             msgBox.setText(tr("A new DB Browser for SQLite version is available (%1.%2.%3).<br/><br/>"
-                              "Please download at <a href='%4'>%4</a>.").arg(major).arg(minor).arg(patch).
+                            "Please download at <a href='%4'>%4</a>.").arg(major).arg(minor).arg(patch).
                                 arg(url));
             msgBox.exec();
 
@@ -2488,6 +2560,11 @@ void MainWindow::checkNewVersion(const QString& versionstring, const QString& ur
                 Settings::setValue("checkversion", "ignpatch", patch);
             }
         }
+    }
+    else
+    {
+        if(!automatic)
+            QMessageBox::information(this, QApplication::applicationName(), tr("You are using the latest version."));
     }
 }
 
@@ -3233,7 +3310,7 @@ void MainWindow::saveProject(const QString& currentFilename)
             SqlExecutionArea* sqlArea = qobject_cast<SqlExecutionArea*>(ui->tabSqlAreas->widget(i));
             QString sqlFilename = sqlArea->fileName();
             xml.writeStartElement("sql");
-            xml.writeAttribute("name", ui->tabSqlAreas->tabText(i));
+            xml.writeAttribute("name", ui->tabSqlAreas->tabText(i).remove(QRegularExpression("\\*$")));
             if(sqlFilename.isEmpty()) {
                 xml.writeCharacters(sqlArea->getSql());
                 sqlArea->getEditor()->setModified(false);
@@ -3490,10 +3567,12 @@ void MainWindow::renameSqlTab(int index)
                                              qApp->applicationName(),
                                              tr("Set a new name for the SQL tab. Use the '&&' character to allow using the following character as a keyboard shortcut."),
                                              QLineEdit::EchoMode::Normal,
-                                             ui->tabSqlAreas->tabText(index));
+                                             ui->tabSqlAreas->tabText(index).remove(QRegularExpression("\\*$")));
 
+    
     if(!new_name.isNull())      // Don't do anything if the Cancel button was clicked
         ui->tabSqlAreas->setTabText(index, new_name);
+	markTabsModified();
 }
 
 void MainWindow::setFindFrameVisibility(bool show)
@@ -3777,7 +3856,7 @@ void MainWindow::showContextMenuSqlTabBar(const QPoint& pos)
     QAction* actionDuplicate = new QAction(this);
     actionDuplicate->setText(tr("Duplicate Tab"));
     connect(actionDuplicate, &QAction::triggered, this, [this, tab]() {
-        QString tab_name = ui->tabSqlAreas->tabText(tab).remove("&").remove(QRegularExpression(" \\(\\d+\\)$"));
+        QString tab_name = ui->tabSqlAreas->tabText(tab).remove("&").remove(QRegularExpression("\\*$")).remove(QRegularExpression(" \\(\\d+\\)$"));
         QString new_tab_name;
         for(int i=1;;i++)
         {
@@ -3785,7 +3864,7 @@ void MainWindow::showContextMenuSqlTabBar(const QPoint& pos)
             bool name_already_exists = false;
             for(int j=0;j<ui->tabSqlAreas->count();j++)
             {
-                if(ui->tabSqlAreas->tabText(j).remove("&") == new_tab_name)
+                if(ui->tabSqlAreas->tabText(j).remove("&").remove(QRegularExpression("\\*$")) == new_tab_name)
                 {
                     name_already_exists = true;
                     break;
@@ -3929,7 +4008,7 @@ TableBrowserDock* MainWindow::newTableBrowserTab(const sqlb::ObjectIdentifier& t
         auto& settings = d->tableBrowser()->settings(d->tableBrowser()->currentlyBrowsedTableName());
         plotDock->updatePlot(d->tableBrowser()->model(), &settings, true, false);
     });
-    connect(d->tableBrowser(), &TableBrowser::prepareForFilter, editDock, &EditDialog::promptSaveData);
+    connect(d->tableBrowser(), &TableBrowser::prepareForFilter, editDock, &EditDialog::promptSaveData, Qt::QueuedConnection);
 
     // Restore titlebar for any other widget
     for(auto dock : allTableBrowserDocks())

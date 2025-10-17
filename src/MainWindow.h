@@ -148,6 +148,7 @@ private:
     sqlb::ObjectIdentifier currentlyBrowsedTableName() const;
 
     QList<TableBrowserDock*> allTableBrowserDocks() const;
+    void getSelectedObject(QString &type, sqlb::ObjectIdentifier& obj);
 
 protected:
     void closeEvent(QCloseEvent *) override;
@@ -172,7 +173,7 @@ public slots:
 private slots:
     void createTreeContextMenu(const QPoint & qPoint);
     void createSchemaDockContextMenu(const QPoint & qPoint);
-    void changeTreeSelection();
+    void changeObjectSelection();
     void fileNew();
     void fileNewInMemoryDatabase(bool open_create_dialog = true);
     // Refresh visible table browsers. When all is true, refresh all browsers.
@@ -213,7 +214,8 @@ private slots:
     void saveSqlResultsAsJson();
     void saveSqlResultsAsView();
     void loadExtension();
-    void checkNewVersion(const QString& versionstring, const QString& url);
+    void checkNewVersion(const bool automatic);
+    void compareVersionAndShowDialog(const QString& versionstring, const QString& url, const bool automatic);
     void openLinkWiki() const;
     void openLinkBugReport() const;
     void openLinkFeatureRequest() const;
@@ -243,6 +245,7 @@ private slots:
     void openUrlOrFile(const QString& urlString);
     void newRowCountsTab();
 
+    void markTabsModified();
     int openSqlTab(bool resetCounter = false);
     void closeSqlTab(int index, bool force = false, bool askSaving = true);
     void changeSqlTab(int index);

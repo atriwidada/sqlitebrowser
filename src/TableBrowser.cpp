@@ -381,7 +381,7 @@ TableBrowser::TableBrowser(DBBrowserDB* _db, QWidget* parent) :
         }
     });
 
-    QShortcut* shortcutActionGlobalFilter = new QShortcut(QKeySequence("Ctrl+Alt+F"), this, nullptr, nullptr, Qt::WidgetWithChildrenShortcut);
+    QShortcut* shortcutActionGlobalFilter = new QShortcut(QKeySequence("F3"), this, nullptr, nullptr, Qt::WidgetWithChildrenShortcut);
     connect(shortcutActionGlobalFilter, &QShortcut::activated, this, [this](){
         ui->editGlobalFilter->setFocus();
     });
@@ -733,6 +733,7 @@ void TableBrowser::modifyFormat(std::function<void(CondFormat&)> changeFunction)
 void TableBrowser::updateRecordsetLabel()
 {
     // Get all the numbers, i.e. the number of the first row and the last row as well as the total number of rows
+    // Internal row numbers start at 0, but we want to show them starting at 1.
     int from = ui->dataTable->verticalHeader()->visualIndexAt(0) + 1;
     int total = m_model->rowCount();
     int real_total = m_model->realRowCount();
@@ -742,7 +743,7 @@ void TableBrowser::updateRecordsetLabel()
 
     // Adjust visible rows to contents if necessary, and then take the new visible rows, which might have changed.
     if(m_adjustRows) {
-        for(int i=from; i<=to; i++)
+        for(int i=from-1; i<=to-1; i++)
             ui->dataTable->resizeRowToContents(i);
         from = ui->dataTable->verticalHeader()->visualIndexAt(0) + 1;
         to = from + ui->dataTable->numVisibleRows() - 1;
@@ -1723,11 +1724,13 @@ void TableBrowser::fetchedData()
         return;
     m_columnsResized = true;
 
-    // Set column widths according to their contents but make sure they don't exceed a certain size
-    ui->dataTable->resizeColumnsToContents();
-    for(int i = 0; i < m_model->columnCount(); i++)
-    {
-        if(ui->dataTable->columnWidth(i) > 300)
-            ui->dataTable->setColumnWidth(i, 300);
+    if (m_settings[currentlyBrowsedTableName()].columnWidths.empty()) {
+        // Set column widths according to their contents but make sure they don't exceed a certain size
+        ui->dataTable->resizeColumnsToContents();
+        for(int i = 0; i < m_model->columnCount(); i++)
+        {
+            if(ui->dataTable->columnWidth(i) > 300)
+                ui->dataTable->setColumnWidth(i, 300);
+        }
     }
 }
